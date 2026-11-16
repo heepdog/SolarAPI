@@ -6,12 +6,19 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import sqlite3
+from datetime import datetime, timezone
 from typing import Any
 
 from dotenv import load_dotenv
 
-from solar_api import APsystemsClient, analyze_inverter_file
+from solar_api import APsystemsClient, analyze_inverter_data
 from solar_api.config import get_today
+from solar_api.db import (
+    get_inventory_changes,
+    get_nonproducing_channel_changes,
+    save_inverter_run,
+)
 
 import emailalert
 
@@ -66,7 +73,14 @@ def main() -> int:
     """Fetch, save, and analyze today's inverter report for each configured system."""
     load_dotenv(PROJECT_DIR / ".env", override=False)
 
-    timezone = get_setting("APPSYSTEMS_TIMEZONE", "APSYSTEMS_TIMEZONE")
+    timezone_name = get_setting("APPSYSTEMS_TIMEZONE", "APSYSTEMS_TIMEZONE")
+    database_path = Path(
+        get_setting("APPSYSTEMS_DB_PATH")
+        or str(PROJECT_DIR / "solar_reports.sqlite3")
+    ).expanduser()
+    if not database_path.is_absolute():
+        database_path = PROJECT_DIR / database_path
+
     output: dict[str, Any] = {"systems": {}}
     alert_sections = []
     alert_systems = []
@@ -92,46 +106,81 @@ def main() -> int:
             failed = True
             continue
 
+        run_details: dict[str, Any] = {}
         try:
             client = APsystemsClient(
                 app_id=app_id,
                 app_secret=app_secret,
                 system_id=system_id,
-                timezone=timezone,
+                timezone=timezone_name,
             )
             results = client.get_inverter_energy()
+            run_timestamp = datetime.now(timezone.utc)
+            run_at = run_timestamp.isoformat(timespec="microseconds")
             report_path = (
                 PROJECT_DIR
-                / f"inverterdata_{name.lower()}_{get_today(timezone)}.json"
+                / (
+                    f"inverterdata_{name.lower()}_{get_today(timezone_name)}_"
+                    f"{run_timestamp.strftime('%Y%m%dT%H%M%S%fZ')}.json"
+                )
             )
             with report_path.open("w", encoding="utf-8") as report_file:
                 json.dump(results, report_file, indent=2)
                 report_file.write("\n")
+            run_details = {"report_file": str(report_path)}
 
-            analysis = analyze_inverter_file(report_path)
+            report_date = (
+                results[0].get("date")
+                if results
+                else get_today(timezone_name)
+            )
+            run_id = save_inverter_run(
+                database_path,
+                system_name=name,
+                system_id=system_id,
+                report_date=report_date,
+                inverters=results,
+                run_at=run_at,
+            )
+            run_details.update(
+                {
+                    "database_path": str(database_path),
+                    "database_run_id": run_id,
+                }
+            )
+            run_details["inventory_changes"] = get_inventory_changes(
+                database_path, run_id
+            )
+            channel_changes = get_nonproducing_channel_changes(
+                database_path, run_id
+            )
+            run_details["nonproducing_channel_changes"] = channel_changes
+
+            analysis = analyze_inverter_data(results)
             output["systems"][name] = {
-                "report_file": str(report_path),
+                **run_details,
                 "analysis": analysis,
                 "inverter_errors": [
                     inverter for inverter in results if "error" in inverter
                 ],
             }
             if analysis["inverter_errors"]:
+                failed = True
+            if channel_changes["comparable"] and channel_changes["changed"]:
                 alert_sections.append(
                     "\n".join(
                         [
                             f"{name} Solar Details",
-                            f"Total system output today: "
-                            f"{analysis['total_system_output_kwh']:.2f} kWh",
-                            f"Inverters with low output today ({analysis['inverter_error_count']}):",
-                            *analysis["inverter_errors"],
+                            "Channels not delivering energy changed from "
+                            f"{channel_changes['previous_count']} to "
+                            f"{channel_changes['current_count']} "
+                            f"({channel_changes['count_delta']:+d}).",
                         ]
                     )
                 )
                 alert_systems.append(name)
-                failed = True
-        except (OSError, RuntimeError, ValueError) as error:
-            output["systems"][name] = {"error": str(error)}
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as error:
+            output["systems"][name] = {**run_details, "error": str(error)}
             failed = True
 
     if alert_sections:

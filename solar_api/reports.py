@@ -293,6 +293,7 @@ def get_inverter_energy(
                 "channel_energy_kwh": channels,
             }
             if errors:
+                item["errors"] = errors
                 item["error"] = "; ".join(errors)
             results.append(item)
 

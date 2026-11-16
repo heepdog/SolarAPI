@@ -1,1 +1,4 @@
 .env
+solar_reports.sqlite3*
+__pycache__/
+*.py[cod]
