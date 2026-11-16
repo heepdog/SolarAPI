@@ -3,7 +3,7 @@ import smtplib
 from dotenv import load_dotenv
 import os
 
-def sendalert(receiver_email = None, 
+def sendalert(receiver_email=None,
               message = "Hello! This email was sent using Python and Gmail SMTP.",
               content = None ,
               subject = None,
@@ -11,6 +11,9 @@ def sendalert(receiver_email = None,
 
     # 1. Configure account and message details
     load_dotenv()
+    receiver_email = receiver_email or os.getenv("ALERT_RECIPIENT")
+    if not receiver_email:
+        raise ValueError("Set ALERT_RECIPIENT before sending email")
     sender_email = os.getenv("SENDER_EMAIL")
     app_password = os.getenv("EMAIL_APP_PASSWORD")  # Your 16-character App Password
 

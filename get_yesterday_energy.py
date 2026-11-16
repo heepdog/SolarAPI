@@ -15,10 +15,9 @@ from dotenv import load_dotenv
 from solar_api import APsystemsClient
 from solar_api.reports import analyze_inverter_file
 
-IFTTT_URL = os.getenv("IFTTT_URL")
-
 if __name__ == "__main__":
     load_dotenv()
+    IFTTT_URL = os.getenv("IFTTT_URL")
     
     client = APsystemsClient(
         app_id=os.getenv("HEATMOR_APSYSTEMS_APP_ID"),

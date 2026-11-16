@@ -1,4 +1,9 @@
 .env
+.env.*
+!.env.example
 solar_reports.sqlite3*
 __pycache__/
 *.py[cod]
+/inverterdata*.json
+/inverterdata*.txt
+/solar_daily.log
