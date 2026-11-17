@@ -108,8 +108,32 @@ class InverterDatabaseTests(unittest.TestCase):
             ["inv-2"],
         )
 
-    def test_nonproducing_channel_count_compares_with_previous_run(self) -> None:
+    def test_low_channel_changes_compare_with_previous_day(self) -> None:
         first_run = save_inverter_run(
+            self.database_path,
+            system_name="Test system",
+            system_id="system-1",
+            report_date="2026-11-15",
+            run_at="2026-11-15T12:00:00+00:00",
+            inverters=[
+                {
+                    "ecu_id": "ecu-1",
+                    "inverter_id": "1",
+                    "channel_energy_kwh": {"e1": 1.0},
+                },
+                {
+                    "ecu_id": "ecu-1",
+                    "inverter_id": "2",
+                    "channel_energy_kwh": {"e1": 1.0},
+                },
+                {
+                    "ecu_id": "ecu-1",
+                    "inverter_id": "3",
+                    "channel_energy_kwh": {"e1": 0.5},
+                },
+            ],
+        )
+        second_run = save_inverter_run(
             self.database_path,
             system_name="Test system",
             system_id="system-1",
@@ -118,22 +142,18 @@ class InverterDatabaseTests(unittest.TestCase):
             inverters=[
                 {
                     "ecu_id": "ecu-1",
-                    "inverter_id": "inv-1",
-                    "channel_energy_kwh": {"e1": 0, "e2": 1.0},
-                }
-            ],
-        )
-        second_run = save_inverter_run(
-            self.database_path,
-            system_name="Test system",
-            system_id="system-1",
-            report_date="2026-11-16",
-            run_at="2026-11-16T12:01:00+00:00",
-            inverters=[
+                    "inverter_id": "1",
+                    "channel_energy_kwh": {"e1": 1.0},
+                },
                 {
                     "ecu_id": "ecu-1",
-                    "inverter_id": "inv-1",
-                    "channel_energy_kwh": {"e1": 0, "e2": 0},
+                    "inverter_id": "2",
+                    "channel_energy_kwh": {"e1": 0.5},
+                },
+                {
+                    "ecu_id": "ecu-1",
+                    "inverter_id": "3",
+                    "channel_energy_kwh": {"e1": 1.0},
                 }
             ],
         )
@@ -144,23 +164,37 @@ class InverterDatabaseTests(unittest.TestCase):
 
         self.assertTrue(changes["comparable"])
         self.assertEqual(changes["baseline_run_id"], first_run)
+        self.assertEqual(changes["previous_report_date"], "2026-11-15")
         self.assertEqual(changes["previous_count"], 1)
-        self.assertEqual(changes["current_count"], 2)
+        self.assertEqual(changes["current_count"], 1)
         self.assertTrue(changes["changed"])
-        self.assertEqual(changes["count_delta"], 1)
+        self.assertEqual(changes["count_delta"], 0)
+        self.assertEqual(
+            [reading["inverter_id"] for reading in changes["newly_below_threshold"]],
+            ["2"],
+        )
+        self.assertEqual(
+            [reading["inverter_id"] for reading in changes["recovered"]],
+            ["3"],
+        )
 
-    def test_unchanged_nonproducing_channel_count_is_not_a_change(self) -> None:
+    def test_unchanged_low_channel_status_is_not_a_change(self) -> None:
         first_run = save_inverter_run(
             self.database_path,
             system_name="Test system",
             system_id="system-1",
-            report_date="2026-11-16",
-            run_at="2026-11-16T12:00:00+00:00",
+            report_date="2026-11-15",
+            run_at="2026-11-15T12:00:00+00:00",
             inverters=[
                 {
                     "ecu_id": "ecu-1",
-                    "inverter_id": "inv-1",
-                    "channel_energy_kwh": {"e1": 0, "e2": 1.0},
+                    "inverter_id": "1",
+                    "channel_energy_kwh": {"e1": 1.0},
+                },
+                {
+                    "ecu_id": "ecu-1",
+                    "inverter_id": "2",
+                    "channel_energy_kwh": {"e1": 0.5},
                 }
             ],
         )
@@ -169,12 +203,17 @@ class InverterDatabaseTests(unittest.TestCase):
             system_name="Test system",
             system_id="system-1",
             report_date="2026-11-16",
-            run_at="2026-11-16T12:01:00+00:00",
+            run_at="2026-11-16T12:00:00+00:00",
             inverters=[
                 {
                     "ecu_id": "ecu-1",
-                    "inverter_id": "inv-1",
-                    "channel_energy_kwh": {"e1": 1.0, "e2": 0},
+                    "inverter_id": "1",
+                    "channel_energy_kwh": {"e1": 1.0},
+                },
+                {
+                    "ecu_id": "ecu-1",
+                    "inverter_id": "2",
+                    "channel_energy_kwh": {"e1": 0.5},
                 }
             ],
         )
@@ -183,7 +222,8 @@ class InverterDatabaseTests(unittest.TestCase):
             self.database_path, second_run
         )
 
-        self.assertEqual(changes["previous_count"], changes["current_count"])
+        self.assertEqual(changes["previous_count"], 1)
+        self.assertEqual(changes["current_count"], 1)
         self.assertFalse(changes["changed"])
 
     def test_invalid_reading_rolls_back_the_entire_run(self) -> None:

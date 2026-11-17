@@ -283,17 +283,20 @@ def get_inventory_changes(database_path: Path, run_id: int) -> dict[str, Any]:
             for ecu_id, inverter_id in sorted(previous.keys() - current.keys())
         ]
         return result
-
-
 def get_nonproducing_channel_changes(
-    database_path: Path, run_id: int
+    database_path: Path,
+    run_id: int,
+    minimum_percent_of_average: float = 80,
 ) -> dict[str, Any]:
-    """Compare zero-or-negative channel readings with the preceding complete run."""
+    """Compare below-average channels with the previous day's complete run."""
+    if not 0 <= minimum_percent_of_average <= 100:
+        raise ValueError("minimum_percent_of_average must be between 0 and 100")
+
     initialize_database(database_path)
     with closing(_connect(Path(database_path))) as connection, connection:
         current_run = connection.execute(
             """
-            SELECT run_id, system_id, run_at, inventory_complete
+            SELECT run_id, system_id, report_date, inventory_complete
             FROM report_runs
             WHERE run_id = ?
             """,
@@ -305,9 +308,12 @@ def get_nonproducing_channel_changes(
         result: dict[str, Any] = {
             "comparable": False,
             "baseline_run_id": None,
+            "previous_report_date": None,
             "previous_count": None,
             "current_count": None,
             "changed": False,
+            "newly_below_threshold": [],
+            "recovered": [],
         }
         if not current_run["inventory_complete"]:
             result["reason"] = "current inventory scan is incomplete"
@@ -323,55 +329,84 @@ def get_nonproducing_channel_changes(
 
         baseline = connection.execute(
             """
-            SELECT runs.run_id
+            SELECT runs.run_id, runs.report_date
             FROM report_runs AS runs
             WHERE runs.system_id = ?
+              AND runs.report_date = date(?, '-1 day')
               AND runs.inventory_complete = 1
               AND NOT EXISTS (
                     SELECT 1
                     FROM inverter_errors AS errors
                     WHERE errors.run_id = runs.run_id
               )
-              AND (
-                    runs.run_at < ?
-                    OR (runs.run_at = ? AND runs.run_id < ?)
-              )
             ORDER BY runs.run_at DESC, runs.run_id DESC
             LIMIT 1
             """,
             (
                 current_run["system_id"],
-                current_run["run_at"],
-                current_run["run_at"],
-                run_id,
+                current_run["report_date"],
             ),
         ).fetchone()
         if baseline is None:
-            result["reason"] = "no previous complete reading snapshot"
+            result["reason"] = "no previous-day complete reading snapshot"
             return result
 
         baseline_run_id = baseline["run_id"]
-        counts = connection.execute(
+        rows = connection.execute(
             """
-            SELECT run_id, COUNT(*) AS nonproducing_count
+            SELECT run_id, ecu_id, inverter_id, channel, energy_kwh
             FROM channel_energy_readings
             WHERE run_id IN (?, ?)
-              AND energy_kwh <= 0
-            GROUP BY run_id
             """,
             (baseline_run_id, run_id),
         ).fetchall()
-        counts_by_run = {row["run_id"]: row["nonproducing_count"] for row in counts}
-        previous_count = counts_by_run.get(baseline_run_id, 0)
-        current_count = counts_by_run.get(run_id, 0)
+        readings_by_run: dict[int, dict[str, list[tuple[str, str, float]]]] = {
+            baseline_run_id: {},
+            run_id: {},
+        }
+        for row in rows:
+            if row["energy_kwh"] < 0:
+                continue
+            readings_by_run[row["run_id"]].setdefault(row["channel"], []).append(
+                (row["ecu_id"], row["inverter_id"], row["energy_kwh"])
+            )
+
+        def find_low_channels(
+            readings_by_channel: dict[str, list[tuple[str, str, float]]]
+        ) -> dict[tuple[str, str, str], dict[str, Any]]:
+            low_channels = {}
+            for channel, readings in readings_by_channel.items():
+                average = sum(value for _, _, value in readings) / len(readings)
+                cutoff = average * minimum_percent_of_average / 100
+                for ecu_id, inverter_id, value in readings:
+                    if value < cutoff:
+                        low_channels[(ecu_id, inverter_id, channel)] = {
+                            "ecu_id": ecu_id,
+                            "inverter_id": inverter_id,
+                            "channel": channel,
+                            "energy_kwh": value,
+                            "channel_average_kwh": average,
+                            "percent_of_average": value / average * 100,
+                        }
+            return low_channels
+
+        previous_low = find_low_channels(readings_by_run[baseline_run_id])
+        current_low = find_low_channels(readings_by_run[run_id])
+        newly_low = current_low.keys() - previous_low.keys()
+        recovered = previous_low.keys() - current_low.keys()
         result.update(
             {
                 "comparable": True,
                 "baseline_run_id": baseline_run_id,
-                "previous_count": previous_count,
-                "current_count": current_count,
-                "changed": previous_count != current_count,
-                "count_delta": current_count - previous_count,
+                "previous_report_date": baseline["report_date"],
+                "previous_count": len(previous_low),
+                "current_count": len(current_low),
+                "changed": bool(newly_low or recovered),
+                "newly_below_threshold": [
+                    current_low[key] for key in sorted(newly_low)
+                ],
+                "recovered": [previous_low[key] for key in sorted(recovered)],
+                "count_delta": len(current_low) - len(previous_low),
             }
         )
         return result

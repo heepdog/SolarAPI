@@ -7,11 +7,12 @@ def sendalert(receiver_email=None,
               message = "Hello! This email was sent using Python and Gmail SMTP.",
               content = None ,
               subject = None,
+              html_content = None,
               ):
 
     # 1. Configure account and message details
     load_dotenv()
-    receiver_email = receiver_email or os.getenv("ALERT_RECIPIENT")
+    receiver_email = receiver_email or os.getenv("RECIEVER_EMAIL")
     if not receiver_email:
         raise ValueError("Set ALERT_RECIPIENT before sending email")
     sender_email = os.getenv("SENDER_EMAIL")
@@ -22,6 +23,8 @@ def sendalert(receiver_email=None,
     msg["From"] = sender_email
     msg["To"] = receiver_email
     msg.set_content(message + "\n" + (content or "This is a test."))
+    if html_content:
+        msg.add_alternative(html_content, subtype="html")
 
     # 2. Connect to Gmail's SMTP server and send
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
